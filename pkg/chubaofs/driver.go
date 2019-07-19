@@ -1,66 +1,49 @@
-package cfs
+package chubaofs
 
 import (
-	"github.com/container-storage-interface/spec/lib/go/csi/v0"
 	"github.com/golang/glog"
-
-	"github.com/chubaofs/chubaofs-csi/pkg/csi-common"
 )
 
 type driver struct {
-	csiDriver   *csicommon.CSIDriver
-	endpoint    string
-	cloudconfig string
+	name     string
+	nodeID   string
+	endpoint string
 
-	ids *csicommon.DefaultIdentityServer
+	ids *identityServer
 	cs  *controllerServer
 	ns  *nodeServer
-
-	cap   []*csi.VolumeCapability_AccessMode
-	cscap []*csi.ControllerServiceCapability
 }
-
-const (
-	driverName = "csi-cfsplugin"
-)
 
 var (
-	version = "0.3.0"
+	version = "1.0.0"
 )
 
-func NewDriver(nodeID, endpoint string) *driver {
-	glog.Infof("Driver: %v version: %v", driverName, version)
-
-	d := &driver{}
-
-	d.endpoint = endpoint
-
-	csiDriver := csicommon.NewCSIDriver(driverName, version, nodeID)
-	csiDriver.AddControllerServiceCapabilities(
-		[]csi.ControllerServiceCapability_RPC_Type{
-			csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
-		})
-	csiDriver.AddVolumeCapabilityAccessModes([]csi.VolumeCapability_AccessMode_Mode{csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER})
-
-	d.csiDriver = csiDriver
-
-	return d
-}
-
-func NewControllerServer(d *driver) *controllerServer {
-	return &controllerServer{
-		DefaultControllerServer: csicommon.NewDefaultControllerServer(d.csiDriver),
-		cfsMasterHosts:          make(map[string][]string),
+func NewDriver(driverName, nodeID, endpoint string) (*driver, error) {
+	if driverName == "" {
+		return nil, fmt.Errorf("No driver name provided")
 	}
-}
 
-func NewNodeServer(d *driver) *nodeServer {
-	return &nodeServer{
-		DefaultNodeServer: csicommon.NewDefaultNodeServer(d.csiDriver),
+	if nodeID == "" {
+		return nil, fmt.Errorf("No node id provided")
 	}
+
+	if endpoint == "" {
+		return nil, fmt.Errorf("No driver endpoint provided")
+	}
+
+	glog.Infof("Driver: %v Version: %v", driverName, version)
+
+	return &driver{
+		name:     driverName,
+		nodeID:   nodeID,
+		endpoint: endpoint,
+	}, nil
 }
 
 func (d *driver) Run() {
+	d.ids = NewIdentityServer(d.name, version)
+	d.ns = NewNodeServer(d.nodeID)
+	d.cs = NewControllerServer()
 
-	csicommon.RunControllerandNodePublishServer(d.endpoint, d.csiDriver, NewControllerServer(d), NewNodeServer(d))
+	// TODO:
 }

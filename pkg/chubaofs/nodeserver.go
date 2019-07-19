@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cfs
+package chubaofs
 
 import (
 	"encoding/json"
@@ -22,20 +22,25 @@ import (
 	"os/exec"
 	"path"
 
-	"github.com/container-storage-interface/spec/lib/go/csi/v0"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/volume/util"
 
-	"github.com/chubaofs/chubaofs-csi/pkg/csi-common"
+	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/glog"
 	"time"
 )
 
 type nodeServer struct {
-	*csicommon.DefaultNodeServer
+	nodeID string
+}
+
+func NewNodeServer(nodeId string) *nodeServer {
+	return &nodeServer{
+		nodeID: nodeId,
+	}
 }
 
 func WriteBytes(filePath string, b []byte) (int, error) {

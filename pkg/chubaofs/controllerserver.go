@@ -14,16 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cfs
+package chubaofs
 
 import (
 	"fmt"
-	"github.com/chubaofs/chubaofs-csi/pkg/csi-common"
-	"github.com/container-storage-interface/spec/lib/go/csi/v0"
 	"github.com/golang/glog"
 	"golang.org/x/net/context"
 	"k8s.io/kubernetes/pkg/volume/util"
 	"sync"
+
+	"github.com/container-storage-interface/spec/lib/go/csi"
 )
 
 const (
@@ -52,10 +52,19 @@ const (
 )
 
 type controllerServer struct {
-	*csicommon.DefaultControllerServer
+	caps []*csi.ControllerServiceCapability
 
 	cfsMasterHostsLock sync.RWMutex
 	cfsMasterHosts     map[string][]string
+}
+
+func NewControllerServer() *controllerServer {
+	return &controllerServer{
+		caps: getControllerServiceCapabilities(
+			[]csi.ControllerServiceCapability_RPC_Type{
+				csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
+			}),
+	}
 }
 
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
