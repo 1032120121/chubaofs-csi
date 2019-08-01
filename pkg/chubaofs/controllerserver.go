@@ -21,9 +21,28 @@ import (
 	"github.com/golang/glog"
 	"golang.org/x/net/context"
 	"k8s.io/kubernetes/pkg/volume/util"
+	"strings"
 	"sync"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/container-storage-interface/spec/lib/go/csi"
+)
+
+const (
+	KMountPoint = "mountPoint"
+	KVolumeName = "volName"
+	KMasterAddr = "masterAddr"
+	KLogDir     = "logDir"
+	KWarnLogDir = "warnLogDir"
+	KLogLevel   = "logLevel"
+	KOwner      = "owner"
+	KProfPort   = "profPort"
+)
+
+const (
+	MinVolumeSize = util.GIB
 )
 
 const (
@@ -46,9 +65,6 @@ const (
 	FUSE_KEY_LOG_LEVEL_V2    = "logLevel"
 	FUSE_KEY_LOOKUP_VALID_V1 = "lookupValid"
 	FUSE_KEY_OWNER_V1        = "owner"
-
-	ALLOCATE_MIN_VOL_SIZE_BYTE = 1024 * 1024 * 1024
-	ALLOCATE_CFS_VOL_SIZE_UNIT = 1024 * 1024 * 1024
 )
 
 type controllerServer struct {
@@ -68,27 +84,48 @@ func NewControllerServer() *controllerServer {
 }
 
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
-	glog.V(2).Infof("--1-------CreateVolume req:%v", req)
-	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME); err != nil {
-		glog.Errorf("invalid create cfs volume req: %v", req)
+	glog.V(2).Infof("CreateVolume req:%v", req)
+	if err := cs.validateControllerServiceRequest(csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME); err != nil {
+		glog.V(3).Infof("Invalid create volume req: %v", req)
 		return nil, err
 	}
 
-	// Volume Size - Default is 1 GiB
-	var volSizeBytes int64 = ALLOCATE_MIN_VOL_SIZE_BYTE
-	if req.GetCapacityRange() != nil {
-		required := int64(req.GetCapacityRange().GetRequiredBytes())
-		glog.V(4).Infof("GetRequiredBytes:%v", volSizeBytes)
-		if required > ALLOCATE_MIN_VOL_SIZE_BYTE {
-			volSizeBytes = required
+	// Check arguments
+	if len(req.GetName()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "Name missing in request")
+	}
+	caps := req.GetVolumeCapabilities()
+	if caps == nil {
+		return nil, status.Error(codes.InvalidArgument, "Volume Capabilities missing in request")
+	}
+
+	// Keep a record of the requested access types.
+	var accessTypeMount bool
+
+	for _, cap := range caps {
+		if cap.GetMount() != nil {
+			accessTypeMount = true
 		}
 	}
-	cfsVolSizeGB := int(util.RoundUpSize(volSizeBytes, ALLOCATE_CFS_VOL_SIZE_UNIT))
 
-	volName := req.GetParameters()[KEY_VOLUME_NAME]
-	cfsMasterHost1 := req.GetParameters()[KEY_CFS_MASTER1]
-	cfsMasterHost2 := req.GetParameters()[KEY_CFS_MASTER2]
-	cfsMasterHost3 := req.GetParameters()[KEY_CFS_MASTER3]
+	if !accessTypeMount {
+		return nil, status.Error(codes.InvalidArgument, "Volume lack of mount access type")
+	}
+
+	capacity := int64(req.GetCapacityRange().GetRequiredBytes())
+	if capacity < MinVolumeSize {
+		capacity = MinVolumeSize
+	}
+	capacityInGIB, err := util.RoundUpSizeInt(capacity, util.GIB)
+	if err != nil {
+		glog.V(3).Infof("Invalid capacity size req: %v", req)
+		return nil, err
+	}
+
+	volName := req.GetParameters()[KVolumeName]
+	masterAddr := req.GetParameters()[KMasterAddr]
+	master := strings.Split(masterAddr, ",")
+
 	cs.putMasterHosts(volName, cfsMasterHost1, cfsMasterHost2, cfsMasterHost3)
 	glog.V(4).Infof("GetName:%v", req.GetName())
 	glog.V(4).Infof("GetParameters:%v", req.GetParameters())
@@ -100,7 +137,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 	glog.V(4).Infof("CFS Master Leader Host is:%v", cfsMasterLeader)
 
-	if err := CreateVolume(cfsMasterLeader, volName, cfsVolSizeGB); err != nil {
+	if err := CreateVolume(cfsMasterLeader, volName, capacityInGIB); err != nil {
 		return nil, err
 	}
 	glog.V(2).Infof("CFS Create Volume:%v success.", volName)
@@ -172,4 +209,34 @@ func (cs *controllerServer) getMasterHosts(volumeName string) []string {
 		return hosts
 	}
 	return nil
+}
+
+func (cs *controllerServer) validateControllerServiceRequest(c csi.ControllerServiceCapability_RPC_Type) error {
+	if c == csi.ControllerServiceCapability_RPC_UNKNOWN {
+		return nil
+	}
+
+	for _, cap := range cs.caps {
+		if c == cap.GetRpc().GetType() {
+			return nil
+		}
+	}
+	return status.Errorf(codes.InvalidArgument, "unsupported capability %s", c)
+}
+
+func getControllerServiceCapabilities(cl []csi.ControllerServiceCapability_RPC_Type) []*csi.ControllerServiceCapability {
+	var csc []*csi.ControllerServiceCapability
+
+	for _, cap := range cl {
+		glog.Infof("Enabling controller service capability: %v", cap.String())
+		csc = append(csc, &csi.ControllerServiceCapability{
+			Type: &csi.ControllerServiceCapability_Rpc{
+				Rpc: &csi.ControllerServiceCapability_RPC{
+					Type: cap,
+				},
+			},
+		})
+	}
+
+	return csc
 }

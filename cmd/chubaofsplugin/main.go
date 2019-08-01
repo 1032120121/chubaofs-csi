@@ -39,8 +39,8 @@ func main() {
 	flag.CommandLine.Parse([]string{})
 
 	cmd := &cobra.Command{
-		Use:   "ChubaoFS",
-		Short: "CSI based ChubaoFS driver",
+		Use:   "chubaofsplugin --endpoint <endpoint> --nodeid <nodeid>",
+		Short: "CSI based chubaofs plugin driver",
 		Run: func(cmd *cobra.Command, args []string) {
 			handle()
 		},
