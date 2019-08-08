@@ -17,7 +17,6 @@ limitations under the License.
 package chubaofs
 
 import (
-	"fmt"
 	"github.com/golang/glog"
 	"golang.org/x/net/context"
 	"k8s.io/kubernetes/pkg/volume/util"
@@ -46,32 +45,14 @@ const (
 )
 
 const (
-	KEY_VOLUME_NAME          = "volName"
-	KEY_CFS_MASTER1          = "cfsMaster1"
-	KEY_CFS_MASTER2          = "cfsMaster2"
-	KEY_CFS_MASTER3          = "cfsMaster3"
-	CFS_FUSE_CONFIG_PATH     = "/etc/cfs/fuse.json"
-	FUSE_KEY_LOG_PATH_V1     = "logpath"
-	FUSE_KEY_LOG_PATH_V2     = "logDir"
-	FUSE_KEY_MASTER_ADDR_V1  = "master"
-	FUSE_KEY_MASTER_ADDR_V2  = "masterAddr"
-	FUSE_KEY_MOUNT_POINT_V1  = "mountpoint"
-	FUSE_KEY_MOUNT_POINT_V2  = "mountPoint"
-	FUSE_KEY_VOLUME_NAME_V1  = "volname"
-	FUSE_KEY_VOLUME_NAME_V2  = "volName"
-	FUSE_KEY_PROF_PORT_V1    = "profport"
-	FUSE_KEY_PROF_PORT_V2    = "profPort"
-	FUSE_KEY_LOG_LEVEL_V1    = "loglvl"
-	FUSE_KEY_LOG_LEVEL_V2    = "logLevel"
-	FUSE_KEY_LOOKUP_VALID_V1 = "lookupValid"
-	FUSE_KEY_OWNER_V1        = "owner"
+	defaultOwner = "chubaofs"
 )
 
 type controllerServer struct {
 	caps []*csi.ControllerServiceCapability
 
-	cfsMasterHostsLock sync.RWMutex
-	cfsMasterHosts     map[string][]string
+	masterHostsLock sync.RWMutex
+	masterHosts     map[string]string
 }
 
 func NewControllerServer() *controllerServer {
@@ -84,30 +65,28 @@ func NewControllerServer() *controllerServer {
 }
 
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
-	glog.V(2).Infof("CreateVolume req:%v", req)
+	glog.V(2).Infof("CreateVolume req: %v", req)
+
 	if err := cs.validateControllerServiceRequest(csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME); err != nil {
 		glog.V(3).Infof("Invalid create volume req: %v", req)
 		return nil, err
 	}
 
-	// Check arguments
 	if len(req.GetName()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Name missing in request")
 	}
+
 	caps := req.GetVolumeCapabilities()
 	if caps == nil {
 		return nil, status.Error(codes.InvalidArgument, "Volume Capabilities missing in request")
 	}
 
-	// Keep a record of the requested access types.
 	var accessTypeMount bool
-
 	for _, cap := range caps {
 		if cap.GetMount() != nil {
 			accessTypeMount = true
 		}
 	}
-
 	if !accessTypeMount {
 		return nil, status.Error(codes.InvalidArgument, "Volume lack of mount access type")
 	}
@@ -118,70 +97,69 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 	capacityInGIB, err := util.RoundUpSizeInt(capacity, util.GIB)
 	if err != nil {
-		glog.V(3).Infof("Invalid capacity size req: %v", req)
-		return nil, err
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	volName := req.GetParameters()[KVolumeName]
-	masterAddr := req.GetParameters()[KMasterAddr]
+	paras := req.GetParameters()
+
+	// TODO: check if parameters are valid
+	volumeid := paras[KVolumeName]
+	owner := defaultOwner
+	masterAddr := paras[KMasterAddr]
 	master := strings.Split(masterAddr, ",")
 
-	cs.putMasterHosts(volName, cfsMasterHost1, cfsMasterHost2, cfsMasterHost3)
+	cs.putMasterHosts(volumeid, masterAddr)
 	glog.V(4).Infof("GetName:%v", req.GetName())
-	glog.V(4).Infof("GetParameters:%v", req.GetParameters())
-	glog.V(4).Infof("allocate volume size(GB):%v for name:%v", cfsVolSizeGB, volName)
+	glog.V(4).Infof("GetParameters:%v", paras)
 
-	cfsMasterLeader, err := GetClusterInfo(cfsMasterHost1)
+	leader, err := getClusterInfo(master[0])
 	if err != nil {
 		return nil, err
 	}
-	glog.V(4).Infof("CFS Master Leader Host is:%v", cfsMasterLeader)
 
-	if err := CreateVolume(cfsMasterLeader, volName, capacityInGIB); err != nil {
+	glog.V(4).Infof("ChubaoFS master leader addr is:%v", leader)
+
+	if err := createOrDeleteVolume(createVolumeRequest, leader, volumeid, owner, int64(capacityInGIB)); err != nil {
 		return nil, err
 	}
-	glog.V(2).Infof("CFS Create Volume:%v success.", volName)
+
+	glog.V(2).Infof("ChubaoFS create volume:%v success.", volumeid)
 
 	resp := &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
-			Id:            volName,
-			CapacityBytes: volSizeBytes,
-			Attributes: map[string]string{
-				KEY_VOLUME_NAME: volName,
-				KEY_CFS_MASTER1: cfsMasterHost1,
-				KEY_CFS_MASTER2: cfsMasterHost2,
-				KEY_CFS_MASTER3: cfsMasterHost3,
-			},
+			VolumeId:      volumeid,
+			CapacityBytes: capacity,
+			VolumeContext: paras,
 		},
 	}
 	return resp, nil
 }
 
 func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
-	glog.V(2).Infof("----------DeleteVolume req:%v", req)
-	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME); err != nil {
+	glog.V(2).Infof("DeleteVolume req: %v", req)
+
+	if err := cs.validateControllerServiceRequest(csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME); err != nil {
 		glog.Errorf("invalid delete volume req: %v", req)
 		return nil, err
 	}
-	volumeId := req.VolumeId
+	volumeid := req.VolumeId
 
-	cfsMasterHosts := cs.getMasterHosts(volumeId)
-	if len(cfsMasterHosts) == 0 {
-		glog.Errorf("Not Found CFS master hosts for volumeId:%v", volumeId)
-		return nil, fmt.Errorf("no master hosts")
+	masterAddr := cs.getMasterHosts(volumeid)
+	if masterAddr == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "chubaofs: cannot find master addr, volumeid(%v)", volumeid)
 	}
+	master := strings.Split(masterAddr, ",")
 
-	GetClusterInfo(cfsMasterHosts[0])
-	cfsMasterLeader, err := GetClusterInfo(cfsMasterHosts[0])
+	leader, err := getClusterInfo(master[0])
 	if err != nil {
 		return nil, err
 	}
-	glog.V(4).Infof("CFS Master Leader Host is:%v", cfsMasterLeader)
 
-	if err := DeleteVolume(cfsMasterLeader, volumeId); err != nil {
+	if err := createOrDeleteVolume(createVolumeRequest, leader, volumeid, defaultOwner, 0); err != nil {
 		return nil, err
 	}
-	glog.V(2).Infof("Delete cfs volume :%s deleted success", volumeId)
+
+	glog.V(2).Infof("Delete cfs volume :%s deleted success", volumeid)
 
 	return &csi.DeleteVolumeResponse{}, nil
 }
@@ -189,26 +167,33 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 func (cs *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
 	for _, cap := range req.VolumeCapabilities {
 		if cap.GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER {
-			return &csi.ValidateVolumeCapabilitiesResponse{Supported: false, Message: ""}, nil
+			return nil, status.Error(codes.InvalidArgument, "No multi node multi writer capability")
 		}
 	}
-	return &csi.ValidateVolumeCapabilitiesResponse{Supported: true, Message: ""}, nil
+
+	return &csi.ValidateVolumeCapabilitiesResponse{
+		Confirmed: &csi.ValidateVolumeCapabilitiesResponse_Confirmed{
+			VolumeContext:      req.GetVolumeContext(),
+			VolumeCapabilities: req.GetVolumeCapabilities(),
+			Parameters:         req.GetParameters(),
+		},
+	}, nil
 }
 
-func (cs *controllerServer) putMasterHosts(volumeName string, hosts ...string) {
-	cs.cfsMasterHostsLock.Lock()
-	defer cs.cfsMasterHostsLock.Unlock()
-	cs.cfsMasterHosts[volumeName] = hosts
+func (cs *controllerServer) putMasterHosts(volName string, hosts string) {
+	cs.masterHostsLock.Lock()
+	defer cs.masterHostsLock.Unlock()
+	cs.masterHosts[volName] = hosts
 }
 
-func (cs *controllerServer) getMasterHosts(volumeName string) []string {
-	cs.cfsMasterHostsLock.Lock()
-	defer cs.cfsMasterHostsLock.Unlock()
-	hosts, found := cs.cfsMasterHosts[volumeName]
+func (cs *controllerServer) getMasterHosts(volName string) string {
+	cs.masterHostsLock.Lock()
+	defer cs.masterHostsLock.Unlock()
+	hosts, found := cs.masterHosts[volName]
 	if found {
 		return hosts
 	}
-	return nil
+	return ""
 }
 
 func (cs *controllerServer) validateControllerServiceRequest(c csi.ControllerServiceCapability_RPC_Type) error {
