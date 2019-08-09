@@ -12,10 +12,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"strconv"
-	"strings"
-
-	log "github.com/golang/glog"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -134,162 +130,31 @@ func createOrDeleteVolume(req RequestType, leader, name, owner string, size int6
 	return nil
 }
 
-func doMount(cmdName string, confFile []string) error {
+func doMount(cmdName string, configFile string) error {
 	env := []string{
 		fmt.Sprintf("PATH=%s", os.Getenv("PATH")),
 	}
 
-	for _, conf := range confFile {
-		cmd := exec.Command(cmdName, "-c", conf)
-		cmd.Env = append(cmd.Env, env...)
-		if msg, err := cmd.CombinedOutput(); err != nil {
-			return errors.New(fmt.Sprintf("chubaofs: failed to start client daemon, msg: %v , err: %v", string(msg), err))
-		}
+	cmd := exec.Command(cmdName, "-c", configFile)
+	cmd.Env = append(cmd.Env, env...)
+	if msg, err := cmd.CombinedOutput(); err != nil {
+		return errors.New(fmt.Sprintf("chubaofs: failed to start client daemon, msg: %v , err: %v", string(msg), err))
 	}
 	return nil
 }
 
-func doUmount(mntPoints []string) error {
+func doUmount(mntPoint string) error {
 	env := []string{
 		fmt.Sprintf("PATH=%s", os.Getenv("PATH")),
 	}
 
-	for _, mnt := range mntPoints {
-		cmd := exec.Command("umount", mnt)
-		cmd.Env = append(cmd.Env, env...)
-		msg, err := cmd.CombinedOutput()
-		if err != nil {
-			return errors.New(fmt.Sprintf("chubaofs: failed to umount, msg: %v , err: %v", msg, err))
-		}
-	}
-	return nil
-}
-
-/*
- * This function creates client config files according to export locations.
- */
-func prepareConfigFiles(d *Driver, opt *pb.CreateFileShareOpts) (configFiles, fsMntPoints []string, owner string, err error) {
-	volName := opt.GetId()
-	configFiles = make([]string, 0)
-	fsMntPoints = make([]string, 0)
-
-	/*
-	 * Check client runtime path.
-	 */
-	fi, err := os.Stat(d.conf.ClientPath)
-	if err != nil || !fi.Mode().IsDir() {
-		err = errors.New(fmt.Sprintf("chubaofs: invalid client runtime path, path: %v, err: %v", d.conf.ClientPath, err))
-		return
-	}
-
-	clientConf := path.Join(d.conf.ClientPath, volName, "conf")
-	clientLog := path.Join(d.conf.ClientPath, volName, "log")
-	clientWarnLog := path.Join(d.conf.ClientPath, volName, "warnlog")
-
-	if err = os.MkdirAll(clientConf, os.ModeDir); err != nil {
-		err = errors.New(fmt.Sprintf("chubaofs: failed to create client config dir, path: %v , err: %v", clientConf, err))
-		return
-	}
-	defer func() {
-		if err != nil {
-			log.Warningf("chubaofs: cleaning config dir, %v", clientConf)
-			os.RemoveAll(clientConf)
-		}
-	}()
-
-	if err = os.MkdirAll(clientLog, os.ModeDir); err != nil {
-		err = errors.New(fmt.Sprintf("chubaofs: failed to create client log dir, path: %v", clientLog))
-		return
-	}
-	defer func() {
-		if err != nil {
-			log.Warningf("chubaofs: cleaning log dir, %v", clientLog)
-			os.RemoveAll(clientLog)
-		}
-	}()
-
-	if err = os.MkdirAll(clientWarnLog, os.ModeDir); err != nil {
-		err = errors.New(fmt.Sprintf("chubaofs: failed to create client warn log dir, path: %v , err: %v", clientWarnLog, err))
-		return
-	}
-	defer func() {
-		if err != nil {
-			log.Warningf("chubaofs: cleaning warn log dir, %v", clientWarnLog)
-			os.RemoveAll(clientWarnLog)
-		}
-	}()
-
-	/*
-	 * Check and create mount point directory.
-	 * Mount point dir has to be newly created.
-	 */
-	locations := make([]string, 0)
-	if len(opt.ExportLocations) == 0 {
-		locations = append(locations, path.Join(d.conf.MntPoint, volName))
-	} else {
-		locations = append(locations, opt.ExportLocations...)
-	}
-
-	/*
-	 * Mount point has to be absolute path to avoid umounting the current
-	 * working directory.
-	 */
-	fsMntPoints, err = createAbsMntPoints(locations)
+	cmd := exec.Command("umount", mntPoint)
+	cmd.Env = append(cmd.Env, env...)
+	msg, err := cmd.CombinedOutput()
 	if err != nil {
-		return
+		return errors.New(fmt.Sprintf("chubaofs: failed to umount, msg: %v , err: %v", msg, err))
 	}
-
-	defer func() {
-		if err != nil {
-			for _, mnt := range fsMntPoints {
-				os.RemoveAll(mnt)
-			}
-		}
-	}()
-
-	/*
-	 * Generate client mount config file.
-	 */
-	mntConfig := make(map[string]interface{})
-	mntConfig[KVolumeName] = volName
-	mntConfig[KMasterAddr] = strings.Join(d.conf.MasterAddr, ",")
-	mntConfig[KLogDir] = clientLog
-	mntConfig[KWarnLogDir] = clientWarnLog
-	if d.conf.LogLevel != "" {
-		mntConfig[KLogLevel] = d.conf.LogLevel
-	} else {
-		mntConfig[KLogLevel] = defaultLogLevel
-	}
-	if d.conf.Owner != "" {
-		mntConfig[KOwner] = d.conf.Owner
-	} else {
-		mntConfig[KOwner] = defaultOwner
-	}
-	if d.conf.ProfPort != "" {
-		mntConfig[KProfPort] = d.conf.ProfPort
-	} else {
-		mntConfig[KProfPort] = defaultProfPort
-	}
-
-	owner = mntConfig[KOwner].(string)
-
-	for i, mnt := range fsMntPoints {
-		mntConfig[KMountPoint] = mnt
-		data, e := json.MarshalIndent(mntConfig, "", "    ")
-		if e != nil {
-			err = errors.New(fmt.Sprintf("chubaofs: failed to generate client config file, err(%v)", e))
-			return
-		}
-		filePath := path.Join(clientConf, strconv.Itoa(i), clientConfigFileName)
-		_, e = generateFile(filePath, data)
-		if e != nil {
-			err = errors.New(fmt.Sprintf("chubaofs: failed to generate client config file, err(%v)", e))
-			return
-		}
-		configFiles = append(configFiles, filePath)
-	}
-
-	return
+	return nil
 }
 
 /*

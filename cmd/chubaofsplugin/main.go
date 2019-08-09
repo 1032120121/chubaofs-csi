@@ -65,6 +65,6 @@ func main() {
 }
 
 func handle() {
-	d := cfs.NewDriver(driverName, nodeID, endpoint)
+	d, _ := cfs.NewDriver(driverName, nodeID, endpoint)
 	d.Run()
 }

@@ -17,14 +17,14 @@ limitations under the License.
 package chubaofs
 
 import (
+	"net"
 	"sync"
 
+	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/glog"
+	"github.com/kubernetes-csi/csi-lib-utils/protosanitizer"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
-
-	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/kubernetes-csi/csi-lib-utils/protosanitizer"
 )
 
 /*
@@ -50,9 +50,48 @@ func (s *server) Wait() {
 }
 
 func (s *server) Stop() {
-	s.server.GracefulStop()
+	s.grpcServer.GracefulStop()
 }
 
 func (s *server) ForceStop() {
-	s.server.Stop()
+	s.grpcServer.Stop()
+}
+
+func (s *server) serve(endpoint string, ids csi.IdentityServer, cs csi.ControllerServer, ns csi.NodeServer) {
+	listener, err := net.Listen("tcp", endpoint)
+	if err != nil {
+		glog.Fatalf("Failed to listen: %v", err)
+	}
+
+	opts := []grpc.ServerOption{
+		grpc.UnaryInterceptor(logGRPC),
+	}
+	server := grpc.NewServer(opts...)
+	s.grpcServer = server
+
+	if ids != nil {
+		csi.RegisterIdentityServer(server, ids)
+	}
+	if cs != nil {
+		csi.RegisterControllerServer(server, cs)
+	}
+	if ns != nil {
+		csi.RegisterNodeServer(server, ns)
+	}
+
+	glog.Infof("Listening for connections on address: %#v", listener.Addr())
+
+	server.Serve(listener)
+}
+
+func logGRPC(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	glog.V(3).Infof("GRPC call: %s", info.FullMethod)
+	glog.V(5).Infof("GRPC request: %+v", protosanitizer.StripSecrets(req))
+	resp, err := handler(ctx, req)
+	if err != nil {
+		glog.Errorf("GRPC error: %v", err)
+	} else {
+		glog.V(5).Infof("GRPC response: %+v", protosanitizer.StripSecrets(resp))
+	}
+	return resp, err
 }

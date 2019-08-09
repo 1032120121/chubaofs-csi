@@ -45,7 +45,8 @@ const (
 )
 
 const (
-	defaultOwner = "chubaofs"
+	defaultOwner        = "chubaofs"
+	defaultClientConfig = "/etc/chubaofs/fuse.json"
 )
 
 type controllerServer struct {
