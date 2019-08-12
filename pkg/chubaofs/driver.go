@@ -44,8 +44,11 @@ func NewDriver(driverName, nodeID, endpoint string) (*driver, error) {
 
 func (d *driver) Run() {
 	d.ids = NewIdentityServer(d.name, version)
-	d.ns = NewNodeServer(d.nodeID)
 	d.cs = NewControllerServer()
+	d.ns = NewNodeServer(d.nodeID)
 
 	// TODO:
+	s := NewServer()
+	s.Start(d.endpoint, d.ids, d.cs, d.ns)
+	s.Wait()
 }
