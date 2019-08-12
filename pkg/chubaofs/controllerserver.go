@@ -62,6 +62,7 @@ func NewControllerServer() *controllerServer {
 			[]csi.ControllerServiceCapability_RPC_Type{
 				csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 			}),
+		masterHosts: make(map[string]string),
 	}
 }
 
