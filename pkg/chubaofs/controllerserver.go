@@ -112,7 +112,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	// TODO: check if parameters are valid
 	volumeid := paras[KVolumeName]
 	owner := defaultOwner
-	masterAddr := paras[KMasterAddr]
+	masterAddr := strings.ReplaceAll(paras[KMasterAddr], ";", ",")
 	master := strings.Split(masterAddr, ",")
 
 	cs.putMasterHosts(volumeid, masterAddr)
