@@ -162,7 +162,7 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		return nil, err
 	}
 
-	if err := createOrDeleteVolume(createVolumeRequest, leader, volumeid, defaultOwner, 0); err != nil {
+	if err := createOrDeleteVolume(deleteVolumeRequest, leader, volumeid, defaultOwner, 0); err != nil {
 		return nil, err
 	}
 
