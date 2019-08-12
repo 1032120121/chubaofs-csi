@@ -83,14 +83,19 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		return nil, status.Error(codes.InvalidArgument, "Volume Capabilities missing in request")
 	}
 
-	var accessTypeMount bool
+	var mountOptions *csi.VolumeCapability_MountVolume
 	for _, cap := range caps {
 		if cap.GetMount() != nil {
-			accessTypeMount = true
+			mountOptions = cap.GetMount()
 		}
 	}
-	if !accessTypeMount {
+
+	if mountOptions == nil {
 		return nil, status.Error(codes.InvalidArgument, "Volume lack of mount access type")
+	}
+
+	if strings.Compare(mountOptions.GetFsType(), "chubaofs") != 0 {
+		return nil, status.Error(codes.InvalidArgument, "Volume fstype is not chubaofs")
 	}
 
 	capacity := int64(req.GetCapacityRange().GetRequiredBytes())
