@@ -79,7 +79,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	caps := req.GetVolumeCapabilities()
-	if caps == nil {
+	if len(caps) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Volume Capabilities missing in request")
 	}
 
@@ -87,6 +87,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	for _, cap := range caps {
 		if cap.GetMount() != nil {
 			mountOptions = cap.GetMount()
+			break
 		}
 	}
 
